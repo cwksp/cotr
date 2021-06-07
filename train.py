@@ -2,7 +2,6 @@ import argparse
 import os
 import os.path as osp
 import socket
-from torchvision.transforms.transforms import RandomResizedCrop
 
 import yaml
 import torch
@@ -11,7 +10,6 @@ import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torchvision import transforms
 from tqdm import tqdm
 
 import datasets
