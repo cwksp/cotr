@@ -80,7 +80,7 @@ def main(config):
         tuple(test_dataset[0][0].shape)))
     logger.info(f'Num classes: {n_classes}')
 
-    config['model']['args']['n_classes'] = n_classes
+    config['model']['args']['head']['args']['out_dim'] = n_classes
     model = models.make(config['model']).cuda()
     if n_gpus > 1:
         model = nn.DataParallel(model)
@@ -145,6 +145,8 @@ def main(config):
             log_text += f' {k}={v:.4f}'
             log_temp_scalar('train/' + k, v, epoch)
 
+        lr_scheduler.step()
+
         # Test
         model.eval()
 
@@ -166,7 +168,6 @@ def main(config):
             log_temp_scalar('test/' + k, v, epoch)
 
         test_loss = ave_scalars['loss'].item()
-        lr_scheduler.step()
 
         # Summary and save
         log_text += ', {} {}/{}'.format(*epoch_timer.step())
@@ -192,7 +193,7 @@ def main(config):
         writer.flush()
 
 
-if __name__ == '__main__':
+def make_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('config')
     parser.add_argument('--load-root', default='/data/cyb/data')
@@ -203,9 +204,10 @@ if __name__ == '__main__':
     parser.add_argument('--wandb-upload', action='store_true')
     parser.add_argument('--resume', default=None)
     args = parser.parse_args()
+    return args
 
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
+def make_config(args):
     with open(args.config, 'r') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
 
@@ -233,4 +235,10 @@ if __name__ == '__main__':
     if args.resume is not None:
         config['resume'] = args.resume
 
-    main(config)
+    return config
+
+
+if __name__ == '__main__':
+    args = make_args()
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
+    main(make_config(args))
