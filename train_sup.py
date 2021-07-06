@@ -7,9 +7,10 @@ import yaml
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.backends.cudnn as cudnn
 import wandb
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from tqdm import tqdm
 
 import datasets
@@ -68,19 +69,22 @@ def main(config):
     os.environ['WANDB_API_KEY'] = _['api_key']
     wandb.init(project=_['project'], entity=_['entity'], config=config)
 
+    num_workers = config['num_workers']
+    cudnn.benchmark = config['cudnn_benchmark']
+
     logger.info(f'Hostname: {socket.gethostname()}')
 
     # Dataset, model and optimizer
     train_dataset = datasets.make(config['train_dataset'])
     test_dataset = datasets.make(config['test_dataset'])
     n_classes = train_dataset.n_classes
-    logger.info('Train dataset: {}, shape={}'.format(len(train_dataset),
-        tuple(train_dataset[0][0].shape)))
-    logger.info('Test dataset: {}, shape={}'.format(len(test_dataset),
-        tuple(test_dataset[0][0].shape)))
+    logger.info('Train dataset: {}, shape={}'.format(
+        len(train_dataset), tuple(train_dataset[0][0].shape)))
+    logger.info('Test dataset: {}, shape={}'.format(
+        len(test_dataset), tuple(test_dataset[0][0].shape)))
     logger.info(f'Num classes: {n_classes}')
 
-    config['model']['args']['head']['args']['out_dim'] = n_classes
+    config['model']['args']['predictor']['args']['out_dim'] = n_classes
     model = models.make(config['model']).cuda()
     if n_gpus > 1:
         model = nn.DataParallel(model)
@@ -90,17 +94,18 @@ def main(config):
 
     # Ready to train
     max_epoch = config['max_epoch']
-    n_milestones = config.get('n_milestones', 1)
-    milestone_epoch = max_epoch // n_milestones
     min_test_loss = 1e18
     start_epoch = 1
 
     train_loader = DataLoader(train_dataset, config['batch_size'], shuffle=True,
-                              num_workers=4, pin_memory=True)
+                              num_workers=num_workers, pin_memory=True)
     test_loader = DataLoader(test_dataset, config['batch_size'],
-                             num_workers=4, pin_memory=True)
+                             num_workers=num_workers, pin_memory=True)
 
-    lr_scheduler = CosineAnnealingLR(optimizer, T_max=max_epoch)
+    if config['lr_scheduler'] == 'cosine':
+        lr_scheduler = CosineAnnealingLR(optimizer, T_max=max_epoch)
+    elif config['lr_scheduler'] == 'multistep':
+        lr_scheduler = MultiStepLR(optimizer, config['lr_milestones'])
 
     if resume is not None:
         logger.info(f'Resume from: {resume}')
@@ -195,8 +200,8 @@ def main(config):
 
 def make_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('config')
-    parser.add_argument('--load-root', default='/data/cyb/data')
+    parser.add_argument('--config', default='configs/train_sup_in100.yaml')
+    parser.add_argument('--load-root', default='../../data')
     parser.add_argument('--save-root', default='save')
     parser.add_argument('--name', '-n', default=None)
     parser.add_argument('--tag', default=None)

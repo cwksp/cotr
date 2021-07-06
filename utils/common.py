@@ -84,7 +84,7 @@ class EpochTimer():
         self.t_start = time.time()
         self.t_last = self.t_start
 
-    def step(self, text=True):
+    def epoch_step(self):
         t_cur = time.time()
         self.epoch += 1
         epoch_time = t_cur - self.t_last

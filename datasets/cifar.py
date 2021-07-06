@@ -22,19 +22,25 @@ class CIFAR(Dataset):
         self.data = np.concatenate(self.data, axis=0) \
             .reshape(-1, 3, 32, 32).transpose((0, 2, 3, 1))
         self.data = [Image.fromarray(_) for _ in self.data]
-        self.n_classes = max(self.label) + 1
+        self.num_classes = max(self.label) + 1
 
         self.data_mean = (0.4914, 0.4822, 0.4465)
         self.data_std = (0.2023, 0.1994, 0.2010)
         compose = []
         if transform == 'crop':
-            compose.append(transforms.RandomCrop(32, padding=4))
-            compose.append(transforms.RandomHorizontalFlip())
-        elif transform == 'resized':
-            compose.append(transforms.RandomResizedCrop(32))
-            compose.append(transforms.RandomHorizontalFlip())
-        compose.append(transforms.ToTensor())
-        compose.append(transforms.Normalize(self.data_mean, self.data_std))
+            compose.extend([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+            ])
+        elif transform == 'resized-crop':
+            compose.extend([
+                transforms.RandomResizedCrop(32),
+                transforms.RandomHorizontalFlip(),
+            ])
+        compose.extend([
+            transforms.ToTensor(),
+            transforms.Normalize(self.data_mean, self.data_std),
+        ])
         self.transform = transforms.Compose(compose)
 
     def __len__(self):
