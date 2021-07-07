@@ -3,7 +3,6 @@ import os
 import os.path as osp
 import math
 import copy
-import socket
 from PIL import Image
 
 import yaml
@@ -72,7 +71,7 @@ def train(model, data_loader, optimizer, epoch, log_text):
 
     ave_scalars = {k: utils.Averager() for k in ['loss']}
 
-    pbar = tqdm(data_loader, desc='train', leave=False) \
+    pbar = tqdm(data_loader, desc='train', leave=False)\
            if is_master else data_loader
     for data in pbar:
         data = data.cuda()
@@ -101,7 +100,7 @@ def evaluate_centroid(model, trainset_loader, testset_loader, epoch,
     model.eval()
     proto_keys = ['feat', 'proj', 'pred']
 
-    pbar = tqdm(trainset_loader, desc='eval-center', leave=False) \
+    pbar = tqdm(trainset_loader, desc='eval-center', leave=False)\
             if is_master else trainset_loader
     with torch.no_grad():
         protos = dict()
@@ -126,8 +125,8 @@ def evaluate_centroid(model, trainset_loader, testset_loader, epoch,
     _ = ['acc_' + k for k in proto_keys]
     ave_scalars = {k: utils.Averager() for k in _}
 
-    pbar = tqdm(testset_loader, desc='eval-testset', leave=False) \
-            if is_master else testset_loader
+    pbar = tqdm(testset_loader, desc='eval-testset', leave=False)\
+           if is_master else testset_loader
     with torch.no_grad():
         for data, label in pbar:
             data, label = data.cuda(), label.cuda()
@@ -135,8 +134,8 @@ def evaluate_centroid(model, trainset_loader, testset_loader, epoch,
             for k, emb in embs.items():
                 emb = F.normalize(emb, dim=-1)
                 logits = torch.mm(emb, protos[k].t())
-                acc = (torch.argmax(logits, dim=1) == label) \
-                        .float().mean().item()
+                acc = (torch.argmax(logits, dim=1) == label)\
+                      .float().mean().item()
                 ave_scalars['acc_' + k].add(acc, len(data))
 
     if distributed:
@@ -194,7 +193,7 @@ def main_worker(rank_, cfg_raw):
         log(f'Distributed training enabled.')
 
     cudnn.benchmark = cfg.get('cudnn', False)
-    log(f'{socket.gethostname()}, env setup done.')
+    log(f'Env setup done.')
     # -------- #
 
     # ---- Dataset, model and optimizer ---- #
@@ -247,20 +246,20 @@ def main_worker(rank_, cfg_raw):
 
     train_cotr_dataset = datasets.make(
         cfg['wrapper'], args={'dataset': train_dataset})
-    train_cotr_sampler = DistributedSampler(train_cotr_dataset) \
+    train_cotr_sampler = DistributedSampler(train_cotr_dataset, drop_last=True)\
                          if distributed else None
     train_cotr_loader = DataLoader(
         train_cotr_dataset, cfg['batch_size'], drop_last=True,
-        shuffle=(not distributed), sampler=train_cotr_sampler,
+        sampler=train_cotr_sampler, shuffle=(train_cotr_sampler is None),
         num_workers=num_workers, pin_memory=True)
 
-    trainset_sampler = DistributedSampler(train_dataset) \
+    trainset_sampler = DistributedSampler(train_dataset)\
                        if distributed else None
     trainset_loader = DataLoader(
         train_dataset, cfg['batch_size'], sampler=trainset_sampler,
         num_workers=num_workers, pin_memory=True)
 
-    testset_sampler = DistributedSampler(test_dataset) \
+    testset_sampler = DistributedSampler(test_dataset)\
                       if distributed else None
     testset_loader = DataLoader(
         test_dataset, cfg['batch_size'], sampler=testset_sampler,
@@ -357,22 +356,25 @@ def evaluate_linear(train_dataset, test_dataset, ddp_model, feat_dim):
         ddp_linear = DistributedDataParallel(linear, device_ids=[rank])
     else:
         ddp_linear = linear
+
     lcfg = cfg['linear_eval']
+    lcfg['train_batch_size'] = lcfg['train_batch_size'] // num_gpus
+
     optimizer = utils.make_optimizer(ddp_linear.parameters(), lcfg['optimizer'])
 
     max_epoch = lcfg['max_epoch']
     eval_epoch = lcfg.get('eval_epoch', 1)
     last_acc = 0
     num_workers = cfg['num_workers']
-    trainset_sampler = DistributedSampler(train_dataset) \
+    trainset_sampler = DistributedSampler(train_dataset, drop_last=True)\
                        if distributed else None
     trainset_loader = DataLoader(
-        train_dataset, lcfg['batch_size'], sampler=trainset_sampler,
+        train_dataset, lcfg['train_batch_size'], drop_last=True,
+        sampler=trainset_sampler, shuffle=(trainset_sampler is None),
         num_workers=num_workers, pin_memory=True)
-    testset_sampler = DistributedSampler(test_dataset) \
-                      if distributed else None
+    testset_sampler = None # no distributed sampler
     testset_loader = DataLoader(
-        test_dataset, lcfg['batch_size'], sampler=testset_sampler,
+        test_dataset, lcfg['eval_batch_size'], sampler=testset_sampler,
         num_workers=num_workers, pin_memory=True)
     epoch_timer = utils.EpochTimer(max_epoch)
 
@@ -392,18 +394,19 @@ def evaluate_linear(train_dataset, test_dataset, ddp_model, feat_dim):
         log_text = f'Linear eval epoch {epoch}'
         if distributed:
             trainset_sampler.set_epoch(epoch)
-            testset_sampler.set_epoch(epoch)
+            if testset_sampler is not None:
+                testset_sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, epoch)
 
-        linear.train()
+        ddp_linear.train()
         ave_scalars = {k: utils.Averager() for k in ['loss', 'acc']}
-        pbar = tqdm(trainset_loader, desc='linear-eval/train', leave=False) \
+        pbar = tqdm(trainset_loader, desc='linear-eval/train', leave=False)\
                if is_master else trainset_loader
         for data, label in pbar:
             data, label = data.cuda(), label.cuda()
             with torch.no_grad():
                 data = ddp_model(data, mode='feat')
-            logits = linear(data)
+            logits = ddp_linear(data)
             loss = F.cross_entropy(logits, label)
             acc = (torch.argmax(logits, dim=1) == label).float().mean().item()
             optimizer.zero_grad()
@@ -422,18 +425,18 @@ def evaluate_linear(train_dataset, test_dataset, ddp_model, feat_dim):
 
         if epoch % eval_epoch == 0:
             # ---- Test ---- #
-            linear.eval()
+            ddp_linear.eval()
             _ = ['loss', 'acc']
             ave_scalars = {k: utils.Averager() for k in _}
-            pbar = tqdm(testset_loader, desc='linear-eval/test', leave=False) \
+            pbar = tqdm(testset_loader, desc='linear-eval/test', leave=False)\
                    if is_master else testset_loader
             for data, label in pbar:
                 data, label = data.cuda(), label.cuda()
                 with torch.no_grad():
                     data = ddp_model(data, mode='feat')
-                    logits = linear(data)
+                    logits = ddp_linear(data)
                     loss = F.cross_entropy(logits, label)
-                acc = (torch.argmax(logits, dim=1) == label) \
+                acc = (torch.argmax(logits, dim=1) == label)\
                       .float().mean().item()
                 _ = {'loss': loss.item(), 'acc': acc}
                 for k, v in _.items():
@@ -464,7 +467,7 @@ def parse_args():
     parser.add_argument('--gpu', '-g', default=None)
 
     parser.add_argument('--port', '-p', default='29600')
-    parser.add_argument('--wandb-upload', action='store_true')
+    parser.add_argument('--wandb-upload', '-w', action='store_true')
 
     args = parser.parse_args()
     return args

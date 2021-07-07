@@ -19,8 +19,8 @@ class CIFAR(Dataset):
                 dic = pickle.load(f, encoding='bytes')
             self.data.extend(dic[b'data'])
             self.label.extend(dic[label_key])
-        self.data = np.concatenate(self.data, axis=0) \
-            .reshape(-1, 3, 32, 32).transpose((0, 2, 3, 1))
+        self.data = np.concatenate(self.data, axis=0)\
+                    .reshape(-1, 3, 32, 32).transpose((0, 2, 3, 1))
         self.data = [Image.fromarray(_) for _ in self.data]
         self.num_classes = max(self.label) + 1
 
