@@ -52,6 +52,11 @@ def compute_num_params(model, text=True):
 
 
 def make_optimizer(param_list, optimizer_spec, load_sd=False):
+    if optimizer_spec['name'] == 'lars':
+        from apex.parallel.LARC import LARC
+        optimizer = SGD(param_list, **optimizer_spec['args'])
+        return LARC(optimizer=optimizer, trust_coefficient=.001, clip=False)
+
     Optimizer = {
         'sgd': SGD,
         'adam': Adam

@@ -41,11 +41,17 @@ def log_temp_scalar(k, v, t):
 
 
 def train_step(model, data, optimizer):
-    loss = model(data, mode='train')
+    ret = model(data, mode='train')
+    if isinstance(ret, dict):
+        loss = ret.pop('loss')
+    else:
+        loss = ret
+        ret = {}
+    ret['loss'] = loss.item()
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
-    return {'loss': loss.item()}
+    return ret
 
 
 def dist_all_reduce_mean_(x):
@@ -69,6 +75,7 @@ def train(model, data_loader, optimizer, epoch, log_text):
     _bak_transform = raw_dataset.transform
     raw_dataset.transform = transforms.Compose([]) # hack: no transform
 
+    ##
     ave_scalars = {k: utils.Averager() for k in ['loss']}
 
     pbar = tqdm(data_loader, desc='train', leave=False)\
@@ -174,12 +181,16 @@ def main_worker(rank_, cfg_raw):
     num_gpus = cfg['num_gpus']
     distributed = (num_gpus > 1)
 
+    eval_mode = (cfg.get('eval') is not None)
     if is_master:
-        logger, writer = utils.set_save_dir(cfg['save_dir'], remove=False)
-        with open(osp.join(cfg['save_dir'], 'cfg.yaml'), 'w') as f:
-            yaml.dump(cfg, f, sort_keys=False)
-        log = logger.info
-        setup_wandb()
+        if eval_mode:
+            log = print
+        else:
+            logger, writer = utils.set_save_dir(cfg['save_dir'], remove=False)
+            with open(osp.join(cfg['save_dir'], 'cfg.yaml'), 'w') as f:
+                yaml.dump(cfg, f, sort_keys=False)
+            log = logger.info
+            setup_wandb()
     else:
         def empty_fn(*args, **kwargs):
             pass
@@ -206,7 +217,11 @@ def main_worker(rank_, cfg_raw):
         len(test_dataset), tuple(test_dataset[0][0].shape)))
     log(f'Num classes: {train_dataset.num_classes}')
 
-    model = models.make(cfg['model'])
+    if eval_mode:
+        checkpoint = torch.load(cfg['eval'])
+        model = models.make(checkpoint['model'], load_sd=True)
+    else:
+        model = models.make(cfg['model'])
 
     log(f'Model: #params={utils.compute_num_params(model)}')
     log('- Encoder #params={}, out_dim={}'.format(
@@ -220,12 +235,18 @@ def main_worker(rank_, cfg_raw):
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         torch.cuda.set_device(rank)
         model.cuda(rank)
-        cfg['batch_size'] = cfg['batch_size'] // num_gpus
+        if not eval_mode:
+            cfg['batch_size'] = cfg['batch_size'] // num_gpus
         cfg['num_workers'] = cfg['num_workers'] // num_gpus
         ddp_model = DistributedDataParallel(model, device_ids=[rank])
     else:
         model.cuda()
         ddp_model = model
+
+    if eval_mode:
+        evaluate_linear(train_dataset, test_dataset, ddp_model,
+                        model.encoder.out_dim)
+        return
 
     if cfg.get('fix_pred_lr', False):
         optim_params = [
@@ -256,13 +277,13 @@ def main_worker(rank_, cfg_raw):
     trainset_sampler = DistributedSampler(train_dataset)\
                        if distributed else None
     trainset_loader = DataLoader(
-        train_dataset, cfg['batch_size'], sampler=trainset_sampler,
+        train_dataset, cfg['eval_batch_size_tr'], sampler=trainset_sampler,
         num_workers=num_workers, pin_memory=True)
 
     testset_sampler = DistributedSampler(test_dataset)\
                       if distributed else None
     testset_loader = DataLoader(
-        test_dataset, cfg['batch_size'], sampler=testset_sampler,
+        test_dataset, cfg['eval_batch_size_te'], sampler=testset_sampler,
         num_workers=num_workers, pin_memory=True)
 
     epoch_timer = utils.EpochTimer(max_epoch)
@@ -302,10 +323,10 @@ def main_worker(rank_, cfg_raw):
         if is_master:
             writer.flush()
 
-    evaluate_linear(train_dataset, test_dataset, ddp_model,
-                    model.encoder.out_dim)
-
+    last_acc = evaluate_linear(train_dataset, test_dataset, ddp_model,
+                               model.encoder.out_dim)
     if is_master:
+        wandb.summary['lin-acc'] = last_acc
         writer.close()
         wandb.finish()
 
@@ -358,7 +379,7 @@ def evaluate_linear(train_dataset, test_dataset, ddp_model, feat_dim):
         ddp_linear = linear
 
     lcfg = cfg['linear_eval']
-    lcfg['train_batch_size'] = lcfg['train_batch_size'] // num_gpus
+    lcfg['batch_size'] = lcfg['batch_size'] // num_gpus
 
     optimizer = utils.make_optimizer(ddp_linear.parameters(), lcfg['optimizer'])
 
@@ -369,7 +390,7 @@ def evaluate_linear(train_dataset, test_dataset, ddp_model, feat_dim):
     trainset_sampler = DistributedSampler(train_dataset, drop_last=True)\
                        if distributed else None
     trainset_loader = DataLoader(
-        train_dataset, lcfg['train_batch_size'], drop_last=True,
+        train_dataset, lcfg['batch_size'], drop_last=True,
         sampler=trainset_sampler, shuffle=(trainset_sampler is None),
         num_workers=num_workers, pin_memory=True)
     testset_sampler = None # no distributed sampler
@@ -453,13 +474,12 @@ def evaluate_linear(train_dataset, test_dataset, ddp_model, feat_dim):
         log(log_text)
 
     log('Linear eval acc: {:.3f}'.format(last_acc))
-    if is_master:
-        wandb.summary['lin-acc'] = last_acc
+    return last_acc
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', '-c', default='cfgs/_.yaml')
+    parser.add_argument('--cfg', default='cfgs/_.yaml')
     parser.add_argument('--load-root', default='../../data')
     parser.add_argument('--save-root', default='save')
     parser.add_argument('--name', '-n', default=None)
@@ -468,6 +488,8 @@ def parse_args():
 
     parser.add_argument('--port', '-p', default='29600')
     parser.add_argument('--wandb-upload', '-w', action='store_true')
+
+    parser.add_argument('--eval', '-e', default=None)
 
     args = parser.parse_args()
     return args
@@ -498,6 +520,9 @@ def make_cfg(args):
     cfg['port'] = args.port
     cfg['wandb_upload'] = args.wandb_upload
 
+    if args.eval is not None:
+        cfg['eval'] = args.eval
+
     return cfg
 
 
@@ -507,7 +532,8 @@ def main():
         os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
     cfg = make_cfg(args)
-    utils.ensure_path(cfg['save_dir'])
+    if cfg.get('eval') is None:
+        utils.ensure_path(cfg['save_dir'])
     if cfg['num_gpus'] > 1:
         mp.spawn(main_worker, args=(cfg,), nprocs=cfg['num_gpus'])
     else:
