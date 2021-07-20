@@ -170,3 +170,69 @@ class Transistor(nn.Module):
             ret['proj'] = self.projector(ret['feat'])
             ret['pred'] = self.predictor(x)
             return ret
+
+
+@register('simsiam-distill')
+class SimsiamDistill(nn.Module):
+
+    def __init__(self, encoder, projector, predictor, teacher_ckpt,
+                 teacher_mode='train'):
+        super().__init__()
+        simsiam_model = make(torch.load(teacher_ckpt)['model'], load_sd=True)
+        simsiam_model.cpu()
+        self.teacher = nn.Sequential(
+            simsiam_model.encoder,
+            simsiam_model.projector,
+        )
+        for p in self.teacher.parameters():
+            p.requires_grad = False
+        self.teacher_mode = teacher_mode
+
+        self.encoder = make(encoder)
+        self.projector = make(projector,
+                              args={'in_dim': self.encoder.out_dim})
+        self.predictor = make(predictor,
+                              args={'in_dim': self.projector.out_dim})
+
+    def _forward_train(self, data):
+        n = data.shape[0]
+        k = data.shape[1] // 2
+        data_stu = data[:, :k, ...].contiguous()
+        data_tea = data[:, k:, ...].contiguous()
+
+        outp_lst = []
+        for i in range(k):
+            outp = self.encoder(data_stu[:, i, ...])
+            outp = self.projector(outp)
+            outp = self.predictor(outp)
+            outp_lst.append(outp)
+        outp = torch.stack(outp_lst, dim=1)
+
+        teacher = self.teacher
+        if self.teacher_mode == 'train':
+            teacher.train()
+        else:
+            teacher.eval()
+        with torch.no_grad():
+            gt_lst = []
+            for i in range(k):
+                gt = teacher(data_tea[:, i, ...])
+                gt_lst.append(gt)
+            gt = torch.stack(gt_lst, dim=1)
+
+        gt = gt.mean(dim=1, keepdim=True).expand(-1, k, -1)
+        loss = -(F.normalize(outp, dim=-1)
+                 * F.normalize(gt, dim=-1).detach()).sum(dim=-1).mean()
+        return loss
+
+    def forward(self, x, mode):
+        if mode == 'train':
+            return self._forward_train(x)
+        elif mode == 'feat':
+            return self.encoder(x)
+        elif mode == 'embs':
+            ret = dict()
+            ret['feat'] = self.encoder(x)
+            ret['proj'] = self.projector(ret['feat'])
+            ret['pred'] = self.predictor(ret['proj'])
+            return ret

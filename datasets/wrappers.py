@@ -25,23 +25,31 @@ class GaussianBlur(object):
 class InstanceAug(Dataset):
 
     def __init__(self, dataset, img_size, use_blur=True, n_per=2,
-                 append_rep=False):
+                 append_rep=False, weak_aug=False):
         self.dataset = dataset
-        compose = [
-            transforms.RandomResizedCrop(img_size, scale=(0.2, 1)),
-            transforms.RandomApply([
-                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
-            transforms.RandomGrayscale(p=0.2),
-        ]
-        if use_blur:
-            compose.append(transforms.RandomApply([
-                GaussianBlur([0.1, 2])], p=0.5))
-        compose.extend([
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(dataset.data_mean, dataset.data_std),
-        ])
-        self.transform = transforms.Compose(compose)
+        if not weak_aug:
+            compose = [
+                transforms.RandomResizedCrop(img_size, scale=(0.2, 1)),
+                transforms.RandomApply([
+                    transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+                transforms.RandomGrayscale(p=0.2),
+            ]
+            if use_blur:
+                compose.append(transforms.RandomApply([
+                    GaussianBlur([0.1, 2])], p=0.5))
+            compose.extend([
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(dataset.data_mean, dataset.data_std),
+            ])
+            self.transform = transforms.Compose(compose)
+        else:
+            self.transform = transforms.Compose([
+                transforms.RandomResizedCrop(img_size),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(dataset.data_mean, dataset.data_std),
+            ])
         self.n_per = n_per
         self.rep = transforms.Compose([
             transforms.RandomHorizontalFlip(),
@@ -58,6 +66,51 @@ class InstanceAug(Dataset):
         ret = [self.transform(x) for _ in range(self.n_per)]
         if self.append_rep:
             ret.append(self.rep(x))
+        return torch.stack(ret)
+
+
+@register('instance-aug-distill')
+class InstanceAugDistill(Dataset):
+
+    def __init__(self, dataset, img_size, use_blur=True, n_per=2,
+                 all_contra=False):
+        self.dataset = dataset
+        self.n_per = n_per
+        self.all_contra = all_contra
+
+        self.transform_cls = transforms.Compose([
+            transforms.RandomResizedCrop(img_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(dataset.data_mean, dataset.data_std),
+        ])
+
+        compose = [
+            transforms.RandomResizedCrop(img_size, scale=(0.2, 1)),
+            transforms.RandomApply([
+                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
+            transforms.RandomGrayscale(p=0.2),
+        ]
+        if use_blur:
+            compose.append(transforms.RandomApply([
+                GaussianBlur([0.1, 2])], p=0.5))
+        compose.extend([
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(dataset.data_mean, dataset.data_std),
+        ])
+        self.transform_contra = transforms.Compose(compose)
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        x = self.dataset[idx][0]
+        if not self.all_contra:
+            ret = [self.transform_cls(x) for _ in range(self.n_per)] +\
+                  [self.transform_contra(x) for _ in range(self.n_per)]
+        else:
+            ret = [self.transform_contra(x) for _ in range(self.n_per * 2)]
         return torch.stack(ret)
 
 
