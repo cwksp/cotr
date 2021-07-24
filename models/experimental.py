@@ -220,7 +220,7 @@ class SimsiamDistill(nn.Module):
                 gt_lst.append(gt)
             gt = torch.stack(gt_lst, dim=1)
 
-        gt = gt.mean(dim=1, keepdim=True).expand(-1, k, -1)
+        # gt = gt.mean(dim=1, keepdim=True).expand(-1, k, -1)
         loss = -(F.normalize(outp, dim=-1)
                  * F.normalize(gt, dim=-1).detach()).sum(dim=-1).mean()
         return loss
