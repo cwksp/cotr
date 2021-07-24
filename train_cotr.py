@@ -325,7 +325,7 @@ def main_worker(rank_, cfg_raw):
 
     # last_acc = evaluate_linear(train_dataset, test_dataset, ddp_model,
     #                            model.encoder.out_dim)
-    last_acc = 0
+    last_acc = -1
     if is_master:
         wandb.summary['lin-acc'] = last_acc
         writer.close()
